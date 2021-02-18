@@ -1,0 +1,89 @@
+#!/usr/bin/env bpftrace
+
+#include <linux/skbuff.h>
+#include <linux/ip.h>
+#include <linux/icmp.h>
+#include <net/sock.h>
+#include <linux/netdevice.h>
+#include <linux/netfilter.h>
+#include <linux/netfilter/x_tables.h>
+
+BEGIN
+{
+    @hooknames[0] = "PREROUTING";
+    @hooknames[1] = "INPUT";
+    @hooknames[2] = "FORWARD";
+    @hooknames[3] = "OUTPUT";
+    @hooknames[4] = "POSTROUTING";
+
+    @verdicts[0] = "DROP";
+    @verdicts[1] = "ACCEPT";
+    @verdicts[2] = "STOLEN";
+    @verdicts[3] = "QUEUE";
+    @verdicts[4] = "REPEAT";
+    @verdicts[5] = "STOP";
+
+    printf("[%10s] %12s %15s -> %-15s %s\n",
+        "NETWORK NS", "INTERFACE", "SOURCE", "DESTINATION", "IPTABLES");
+}
+
+tracepoint:net:net_dev_queue,
+tracepoint:net:netif_rx,
+tracepoint:net:netif_receive_skb_entry,
+tracepoint:net:napi_gro_receive_entry
+{
+    $skb = (struct sk_buff *)args->skbaddr;
+    $iph = (struct iphdr *)($skb->head + $skb->network_header);
+    if ($iph->protocol == IPPROTO_ICMP) {
+        $icmph = (struct icmphdr *)($skb->head + $skb->transport_header);
+        if ($icmph->type == ICMP_ECHO || $icmph->type == ICMP_ECHOREPLY) {
+            printf("[%10llu] %12s %15s -> %-15s\n",
+                $skb->dev->nd_net.net->ns.inum, $skb->dev->name,
+                ntop(AF_INET, $iph->saddr), ntop(AF_INET, $iph->daddr));
+        }
+    }
+}
+
+kprobe:ipt_do_table
+{
+    @skb[tid, cpu] = arg0;
+    @state[tid, cpu] = arg1;
+    @table[tid, cpu] = arg2;
+}
+
+kretprobe:ipt_do_table
+/@skb[tid, cpu]/
+{
+    $skb = (struct sk_buff *)@skb[tid, cpu];
+    $state = (struct nf_hook_state *)@state[tid, cpu];
+    $table = (struct xt_table *)@table[tid, cpu];
+
+    $iph = (struct iphdr *)($skb->head + $skb->network_header);
+    if ($iph->protocol == IPPROTO_ICMP) {
+        $icmph = (struct icmphdr *)($skb->head + $skb->transport_header);
+        if ($icmph->type == ICMP_ECHO || $icmph->type == ICMP_ECHOREPLY) {
+            $devname = $state->in->name;
+            if ($state->hook > NF_INET_LOCAL_IN) {
+                $devname = $state->out->name;
+            }
+
+            printf("[%10llu] %12s %15s -> %-15s %s.%s(%s)\n",
+                $state->net->ns.inum, $devname,
+                ntop(AF_INET, $iph->saddr), ntop(AF_INET, $iph->daddr),
+                $table->name, @hooknames[$state->hook], @verdicts[retval]);
+        }
+    }
+
+    delete(@skb[tid, cpu]);
+    delete(@state[tid, cpu]);
+    delete(@table[tid, cpu]);
+}
+
+END
+{
+    clear(@hooknames);
+    clear(@verdicts);
+    clear(@skb);
+    clear(@state);
+    clear(@table);
+}
