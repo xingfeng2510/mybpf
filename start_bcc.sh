@@ -13,11 +13,11 @@ start_container()
     sudo docker run -dit --name $CONTAINER_NAME \
         --privileged \
         --pid host \
-	      -v /lib/modules:/lib/modules:ro \
-	      -v /usr/src:/usr/src:ro \
-	      -v /etc/localtime:/etc/localtime:ro \
-	      --workdir /usr/share/bcc/tools \
-	      zlim/bcc
+	-v /lib/modules:/lib/modules:ro \
+	-v /usr/src:/usr/src:ro \
+	-v /etc/localtime:/etc/localtime:ro \
+	--workdir /usr/share/bcc/tools \
+	zlim/bcc
 
     if [ $? -ne 0 ]; then
         echo "Container '$CONTAINER_NAME' start failed." >&2
